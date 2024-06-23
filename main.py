@@ -58,7 +58,7 @@ def render_rays(nerf_model, ray_origins, ray_directions, hn=0, hf=0.5, nb_bins=1
     return c + 1 - weight_sum.unsqueeze(-1)
 
 
-def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', hn=0, hf=1, nb_epochs=int(1e5),
+def train(nerf_model, optimizer, scheduler, data_loader, test_DL, device='cpu', hn=0, hf=1, nb_epochs=int(1e5),
           nb_bins=192, H=400, W=400, use_kan=False):
 
     training_loss = []
@@ -84,20 +84,27 @@ def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', hn=0, hf=
                 # Update progress bar with current loss
                 pbar.set_postfix({"Loss": loss.item(), "Iteration": i})
                 pbar.update(1)
-            
+
             # Update scheduler
             scheduler.step()
+
 
         # Evaluate model
         nerf_model.eval()
         testing_results = []
-        for img_index in range(200):
-            result = test(hn, hf, testing_dataset, img_index=img_index, nb_bins=nb_bins, H=H, W=W)
-            testing_results.append(result)
         
-        avg_test_result = sum(testing_results) / len(testing_results)
-        # Print testing results for this epoch
-        print(f"Testing results after epoch {epoch+1}: {avg_test_result}")
+        with tqdm(total=200, desc=f"Epoch {epoch+1}/{nb_epochs}") as pbar:
+            for img_index in range(200):  
+                result = test(hn, hf, testing_dataset, img_index=img_index, nb_bins=nb_bins, H=H, W=W)
+                testing_results.append(result)
+                # Update progress bar with current loss
+                pbar.set_postfix({"PSNR": result})
+                pbar.update(1)
+            
+            avg_test_result = sum(testing_results) / len(testing_results)
+            # Print testing results for this epoch
+            print(f"Testing results after epoch {epoch+1}: {avg_test_result}")
+           
 
     return training_loss
 
@@ -119,6 +126,7 @@ def test(hn, hf, dataset, chunk_size=10, img_index=0, nb_bins=192, H=400, W=400)
     """
     ray_origins = dataset[img_index * H * W: (img_index + 1) * H * W, :3]
     ray_directions = dataset[img_index * H * W: (img_index + 1) * H * W, 3:6]
+    gt_rgb = dataset[img_index * H * W: (img_index + 1) * H * W, 6:]
 
     data = []   # list of regenerated pixel values
     for i in range(int(np.ceil(H / chunk_size))):   # iterate over chunks
@@ -127,12 +135,39 @@ def test(hn, hf, dataset, chunk_size=10, img_index=0, nb_bins=192, H=400, W=400)
         ray_directions_ = ray_directions[i * W * chunk_size: (i + 1) * W * chunk_size].to(device)        
         regenerated_px_values = render_rays(model, ray_origins_, ray_directions_, hn=hn, hf=hf, nb_bins=nb_bins)
         data.append(regenerated_px_values)
-    img = torch.cat(data).data.cpu().numpy().reshape(H, W, 3)
 
+    img =   (torch.cat(data)
+            .clamp(0, 1)
+            .contiguous()
+            .detach()
+            .cpu()
+            .numpy().reshape(H, W, 3)
+            ) * 255.
+
+    gt_img =   (gt_rgb
+            .clamp(0, 1)
+            .contiguous()
+            .detach()
+            .cpu()
+            .numpy().reshape(H, W, 3)
+            ) * 255.
+    
+    # Compute the difference between corresponding pixels
+    diff = np.subtract(gt_img, img)
+    # Get the square of the difference
+    squared_diff = np.square(diff)
+    # Compute the mean squared error
+    mse = np.mean(squared_diff)
+    # Compute the PSNR
+    max_pixel = 255.
+    psnr = 20 * np.log10(max_pixel) - 10 * np.log10(mse)
+    
     plt.figure()
     plt.imshow(img)
     plt.savefig(f'novel_views/img_{img_index}.png', bbox_inches='tight')
     plt.close()
+
+    return psnr
 
 
 
@@ -154,5 +189,6 @@ if __name__ == '__main__':
     model_optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(model_optimizer, milestones=[2, 4, 8], gamma=0.5)
     data_loader = DataLoader(training_dataset, batch_size=1024, shuffle=True)
-    train(model, model_optimizer, scheduler, data_loader, nb_epochs=16, device=device, hn=2, hf=6, nb_bins=192, H=400,
+    test_DL = DataLoader(testing_dataset, batch_size=1024)
+    train(model, model_optimizer, scheduler, data_loader,test_DL, nb_epochs=16, device=device, hn=2, hf=6, nb_bins=192, H=400,
           W=400, use_kan=use_kan)
