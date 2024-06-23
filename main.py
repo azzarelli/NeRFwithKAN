@@ -5,7 +5,8 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from nerf_models.nerf import NerfModel, KANeRF
+from nerf_models.nerf import NerfModel
+from nerf_models.kanerf import KANeRF
 
 
 def compute_accumulated_transmittance(alphas):
